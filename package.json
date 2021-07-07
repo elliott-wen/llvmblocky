@@ -1,0 +1,16 @@
+{
+  "name": "llvmblocky",
+  "version": "1.0.0",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "llvm-node": "^3.0.0",
+    "typescript": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^16.0.0",
+    "tslib": "^2.3.0"
+  },
+  "scripts": {
+    "build": "tsc"
+  }
+}
