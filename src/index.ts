@@ -3,9 +3,10 @@ import * as et from "elementtree";
 import * as fs from "fs";
 
 const XML_INPUT_PATH = "sample.xml";
-const GLOBAL_INTEGER_TYPE = 0
-const GLOBAL_DOUBLE_TYPE = 1
-const GLOBAL_TEXT_TYPE = 2
+const GLOBAL_INTEGER_TYPE = 0;
+const GLOBAL_DOUBLE_TYPE = 1;
+const GLOBAL_STATIC_TEXT_TYPE = 2;
+const GLOBAL_HEAP_TEXT_TYPE = 3;
 
 function loadXMLFile(path: string): et.ElementTree {
     const xmlString = fs.readFileSync(path, {encoding: 'utf-8'});
@@ -15,7 +16,7 @@ function loadXMLFile(path: string): et.ElementTree {
 
 function sanitizeVariableName(str: string | undefined): string {
     if (!str) {
-        throw Error('Unexpected variable name');
+        throw Error('Unexpected empty variable name');
     }
     str = "id_" + str.replace(/[^a-z0-9._-]/gim, "_");
     return str.trim();
@@ -47,20 +48,11 @@ class BlockyCompiler {
         this.int64Ty = llvm.Type.getInt64Ty(this.context);
         this.doubleTy = llvm.Type.getDoubleTy(this.context);
         this.int8PtrTy = llvm.Type.getInt8PtrTy(this.context);
-        this.globalStructTy = llvm.StructType.get(this.context, [this.int8Ty, this.int64Ty, this.doubleTy, this.int8PtrTy]);
+        this.globalStructTy = llvm.StructType.get(this.context, [this.int64Ty, this.doubleTy, this.int8PtrTy, this.int8Ty]);
         const mainFnTy = llvm.FunctionType.get(llvm.Type.getVoidTy(this.context), false);
         this.mainFn = llvm.Function.create(mainFnTy, llvm.LinkageTypes.ExternalLinkage, "main", this._module);
         const mainEntry = llvm.BasicBlock.create(this.context, "entry", this.mainFn);
         this.builder = new llvm.IRBuilder(mainEntry);
-    }
-
-    compileLogicBoolean(astblock: et.Element): llvm.Value {
-        const numText = astblock.findtext('./field');
-        if (numText === "TRUE") {
-            return llvm.ConstantInt.get(this.context, 1, 64);
-        } else {
-            return llvm.ConstantInt.get(this.context, 0, 64);
-        }
     }
 
     compileGlobals(ast: et.ElementTree): void {
@@ -72,6 +64,17 @@ class BlockyCompiler {
         }
     }
 
+    /* IsLeaf: yes */
+    compileLogicBoolean(astblock: et.Element): llvm.Value {
+        const numText = astblock.findtext('./field');
+        if (numText === "TRUE") {
+            return llvm.ConstantInt.get(this.context, 1, 64);
+        } else {
+            return llvm.ConstantInt.get(this.context, 0, 64);
+        }
+    }
+
+    /* IsLeaf: yes */
     compileMathConstant(astblock: et.Element): llvm.Value {
         const numText = astblock.findtext('./field');
         if (numText === 'PI') {
@@ -80,6 +83,7 @@ class BlockyCompiler {
         throw Error('Unexpected math constant');
     }
 
+    /* IsLeaf: yes */
     compileMathNumber(astblock: et.Element): llvm.Value {
         const numText = astblock.findtext('./field');
         const digiNum = Number(numText);
@@ -96,6 +100,23 @@ class BlockyCompiler {
         }
     }
 
+    /* IsLeaf: yes */
+    compileText(astblock: et.Element): llvm.Value {
+        const literal = astblock.findtext('./field');
+        if (!literal) {
+            throw Error('Unexpected text literal');
+        }
+        const textID = sanitizeVariableName(astblock['attrib']['id']);
+        const literalStr = literal.toString();
+        const utf8Array = new TextEncoder().encode(literalStr);
+        const utf8ArrayType = llvm.ArrayType.get(this.int8Ty, utf8Array.byteLength + 1);
+        const textGlobalVar = new llvm.GlobalVariable(this._module, utf8ArrayType, false, llvm.LinkageTypes.InternalLinkage, llvm.ConstantDataArray.getString(this.context, literalStr), textID);
+        this.globalMap.set(textID, textGlobalVar);
+
+        return textGlobalVar;
+    }
+
+    /* IsLeaf: no */
     compileLogicNegate(astblock: et.Element): llvm.Value {
         const value = astblock.find("./value/block");
         if (!value) {
@@ -106,10 +127,17 @@ class BlockyCompiler {
         if (!blockValue) {
             throw Error("Expecting operand in logic negate");
         }
-        if (!blockValue.type.isIntegerTy()) {
-            throw Error("Expecting int operand in logic negate");
+
+        if (blockValue.type.isIntegerTy()) {
+            return this.builder.createNeg(blockValue);
         }
-        return this.builder.createNeg(blockValue);
+        console.log(this.builder.createAlloca(this.int8Ty));
+        if (blockValue.type.isPointerTy()) { /* Global var, we directly interpret it as an i8 byte. */
+            const globalVarPtr = this.builder.createLoad(blockValue);
+            const globalVar = this.builder.createLoad(globalVarPtr);
+            return this.builder.createNeg(globalVar);
+        }
+        throw Error("Expecting int operand in logic negate");
     }
 
     compileVariableGet(astblock: et.Element): llvm.Value {
@@ -122,7 +150,11 @@ class BlockyCompiler {
         if (!globalVarPtr) {
             throw Error("Unknown Variable in Variable Get");
         }
-        
+        return globalVarPtr;
+    }
+
+    compileVariableSet(astblock: et.Element): llvm.Value | undefined {
+        return undefined;
     }
 
     compileBlock(astblock: et.Element): llvm.Value | undefined {
@@ -133,11 +165,13 @@ class BlockyCompiler {
         } else if (blockType === "logic_boolean") {
             return this.compileLogicBoolean(astblock);
         } else if (blockType === "math_constant") {
-            return this.compileMathConstant(astblock)
+            return this.compileMathConstant(astblock);
         } else if (blockType === "logic_negate") {
-            return this.compileLogicNegate(astblock)
+            return this.compileLogicNegate(astblock);
         } else if (blockType === "variables_get") {
-            return this.compileVariableGet(astblock)
+            return this.compileVariableGet(astblock);
+        } else if (blockType === "text") {
+            return this.compileText(astblock);
         } else {
             console.error("Not implemented " + blockType);
         }
