@@ -9,7 +9,7 @@
         <value name="VALUE">
             <block type="text" id="56Ck;l@y8HB@1!LBvP.G">
                 <field name="TEXT">abcdefg</field>
-            </block>-->
+            </block>
         </value>
     </block>
     <block type="text_print" id="$yAyNjUnS^UjDeDs!aTL" x="288" y="162">

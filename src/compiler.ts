@@ -42,8 +42,12 @@ export class BlockyCompiler {
     globalStructTy: llvm.StructType;
     builder: llvm.IRBuilder;
     mainFn: llvm.Function;
-    trapEntry: llvm.BasicBlock;
+    trapEntry: llvm.BasicBlock | undefined;
     exitEntry: llvm.BasicBlock;
+    printCharArrayCall: llvm.Function | undefined;
+    printDoubleCall: llvm.Function | undefined;
+    printIntegerCall: llvm.Function | undefined;
+    printGlobalCall: llvm.Function | undefined;
 
     constructor() {
         this.context = new llvm.LLVMContext();
@@ -57,7 +61,6 @@ export class BlockyCompiler {
         const mainFnTy = llvm.FunctionType.get(llvm.Type.getVoidTy(this.context), false);
         this.mainFn = llvm.Function.create(mainFnTy, llvm.LinkageTypes.ExternalLinkage, "main", this._module);
         const mainEntry = llvm.BasicBlock.create(this.context, "entry", this.mainFn);
-        this.trapEntry = llvm.BasicBlock.create(this.context, "entry", this.mainFn);
         this.exitEntry = llvm.BasicBlock.create(this.context, "exit", this.mainFn);
         this.builder = new llvm.IRBuilder(mainEntry);
     }
@@ -65,6 +68,9 @@ export class BlockyCompiler {
     _enforceVariableType(typeVariable: llvm.Value, expectedType: VariableType): void {
         const cond = this.builder.createICmpNE(typeVariable, llvm.ConstantInt.get(this.context, expectedType, 8));
         const nextEntry = llvm.BasicBlock.create(this.context, "type_enforce_success_" + expectedType, this.mainFn);
+        if (!this.trapEntry) {
+            this.trapEntry = llvm.BasicBlock.create(this.context, "trap", this.mainFn);
+        }
         this.builder.createCondBr(cond, this.trapEntry, nextEntry);
         this.builder.setInsertionPoint(nextEntry);
     }
@@ -167,15 +173,30 @@ export class BlockyCompiler {
 
     compileTextPrint(astblock: et.Element) {
         const valBlock = astblock.find('./value/block');
-
         const printCharArrayFnTy = llvm.FunctionType.get(this.voidTy, [this.int8PtrTy], false);
-        const printCharArrayCall = llvm.Function.create(printCharArrayFnTy, llvm.LinkageTypes.ExternalLinkage, "_printConstString", this._module);
         const printDoubleFnTy = llvm.FunctionType.get(this.voidTy, [this.doubleTy], false);
-        const printDoubleCall = llvm.Function.create(printDoubleFnTy, llvm.LinkageTypes.ExternalLinkage, "_printDouble", this._module);
         const printIntegerFnTy = llvm.FunctionType.get(this.voidTy, [this.int64Ty], false);
-        const printIntegerCall = llvm.Function.create(printIntegerFnTy, llvm.LinkageTypes.ExternalLinkage, "_printInteger", this._module);
-        const printDynFnTy = llvm.FunctionType.get(this.voidTy, [this.int8PtrTy], false);
-        const printDynCall = llvm.Function.create(printDynFnTy, llvm.LinkageTypes.ExternalLinkage, "_printGlobal", this._module);
+        const printGlobalFnTy = llvm.FunctionType.get(this.voidTy, [this.int8PtrTy], false);
+
+        if (!this.printCharArrayCall) {
+
+            this.printCharArrayCall = llvm.Function.create(printCharArrayFnTy, llvm.LinkageTypes.ExternalLinkage, "_printConstString", this._module);
+        }
+
+        if (!this.printDoubleCall) {
+
+            this.printDoubleCall = llvm.Function.create(printDoubleFnTy, llvm.LinkageTypes.ExternalLinkage, "_printDouble", this._module);
+        }
+
+        if (!this.printIntegerCall) {
+
+            this.printIntegerCall = llvm.Function.create(printIntegerFnTy, llvm.LinkageTypes.ExternalLinkage, "_printInteger", this._module);
+        }
+
+        if (!this.printGlobalCall) {
+
+            this.printGlobalCall = llvm.Function.create(printGlobalFnTy, llvm.LinkageTypes.ExternalLinkage, "_printGlobal", this._module);
+        }
 
 
         if (!valBlock) {
@@ -185,7 +206,7 @@ export class BlockyCompiler {
             }
             const printText = this.compileText(shadowBlock);
             const printTextPtr = this.builder.createBitCast(printText, this.int8PtrTy);
-            this.builder.createCall(printCharArrayFnTy, printCharArrayCall, [printTextPtr]);
+            this.builder.createCall(printCharArrayFnTy, this.printCharArrayCall, [printTextPtr]);
         } else {
             const printText = this.compileBlock(valBlock);
             if (!printText) {
@@ -193,14 +214,14 @@ export class BlockyCompiler {
             }
             if (isGlobalVariable(printText)) { /* Global var, we directly interpret it as an i8 byte. */
                 const printTextPtr = this.builder.createBitCast(printText, this.int8PtrTy);
-                this.builder.createCall(printDynFnTy, printDynCall, [printTextPtr]);
+                this.builder.createCall(printGlobalFnTy, this.printGlobalCall, [printTextPtr]);
             } else if (printText.type.isDoubleTy()) {
-                this.builder.createCall(printDoubleFnTy, printDoubleCall, [printText]);
+                this.builder.createCall(printDoubleFnTy, this.printDoubleCall, [printText]);
             } else if (printText.type.isIntegerTy()) {
-                this.builder.createCall(printIntegerFnTy, printIntegerCall, [printText]);
+                this.builder.createCall(printIntegerFnTy, this.printIntegerCall, [printText]);
             } else if (isConstString(printText)) {
                 const printTextPtr = this.builder.createBitCast(printText, this.int8PtrTy);
-                this.builder.createCall(printCharArrayFnTy, printCharArrayCall, [printTextPtr]);
+                this.builder.createCall(printCharArrayFnTy, this.printCharArrayCall, [printTextPtr]);
             } else {
                 throw Error("Unknown Type in text printing")
             }
@@ -296,12 +317,14 @@ export class BlockyCompiler {
         this.builder.createBr(this.exitEntry);
 
         // Trap Entry
-        this.builder.setInsertionPoint(this.trapEntry);
-        const trapFnTy = llvm.FunctionType.get(this.voidTy, false);
-        const trapCall = llvm.Function.create(trapFnTy, llvm.LinkageTypes.ExternalLinkage, "llvm.trap", this._module);
-        trapCall.addFnAttr(llvm.Attribute.AttrKind.NoReturn);
-        this.builder.createCall(trapFnTy, trapCall, []);
-        this.builder.createBr(this.exitEntry);
+        if (this.trapEntry) {
+            this.builder.setInsertionPoint(this.trapEntry);
+            const trapFnTy = llvm.FunctionType.get(this.voidTy, false);
+            const trapCall = llvm.Function.create(trapFnTy, llvm.LinkageTypes.ExternalLinkage, "llvm.trap", this._module);
+            trapCall.addFnAttr(llvm.Attribute.AttrKind.NoReturn);
+            this.builder.createCall(trapFnTy, trapCall, []);
+            this.builder.createBr(this.exitEntry);
+        }
 
         // Exit Entry
         this.builder.setInsertionPoint(this.exitEntry);
