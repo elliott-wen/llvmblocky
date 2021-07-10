@@ -48,6 +48,7 @@ export class BlockyCompiler {
     printDoubleCall: llvm.Function | undefined;
     printIntegerCall: llvm.Function | undefined;
     printGlobalCall: llvm.Function | undefined;
+    logicNegGlobalCall: llvm.Function | undefined;
 
     constructor() {
         this.context = new llvm.LLVMContext();
@@ -65,15 +66,15 @@ export class BlockyCompiler {
         this.builder = new llvm.IRBuilder(mainEntry);
     }
 
-    _enforceVariableType(typeVariable: llvm.Value, expectedType: VariableType): void {
-        const cond = this.builder.createICmpNE(typeVariable, llvm.ConstantInt.get(this.context, expectedType, 8));
-        const nextEntry = llvm.BasicBlock.create(this.context, "type_enforce_success_" + expectedType, this.mainFn);
-        if (!this.trapEntry) {
-            this.trapEntry = llvm.BasicBlock.create(this.context, "trap", this.mainFn);
-        }
-        this.builder.createCondBr(cond, this.trapEntry, nextEntry);
-        this.builder.setInsertionPoint(nextEntry);
-    }
+    // _enforceVariableType(typeVariable: llvm.Value, expectedType: VariableType): void {
+    //     const cond = this.builder.createICmpNE(typeVariable, llvm.ConstantInt.get(this.context, expectedType, 8));
+    //     const nextEntry = llvm.BasicBlock.create(this.context, "type_enforce_success_" + expectedType, this.mainFn);
+    //     if (!this.trapEntry) {
+    //         this.trapEntry = llvm.BasicBlock.create(this.context, "trap", this.mainFn);
+    //     }
+    //     this.builder.createCondBr(cond, this.trapEntry, nextEntry);
+    //     this.builder.setInsertionPoint(nextEntry);
+    // }
 
     compileGlobals(ast: et.ElementTree): void {
         const globals = ast.findall('./variables/variable');
@@ -127,8 +128,8 @@ export class BlockyCompiler {
             throw Error('Unexpected text literal');
         }
         const literalStr = literal.toString();
-        const res = this.builder.createGlobalString(literalStr);
-        return res;
+        return this.builder.createGlobalString(literalStr);
+
     }
 
     /* IsLeaf: no */
@@ -144,16 +145,14 @@ export class BlockyCompiler {
         }
 
         if (blockValue.type.isIntegerTy()) {
-            return this.builder.createNeg(blockValue);
-        }
-
-        if (isGlobalVariable(blockValue)) { /* Global var, we directly interpret it as an i8 byte. */
-            const typePtr = this.builder.createInBoundsGEP(blockValue, [llvm.ConstantInt.get(this.context, 0), llvm.ConstantInt.get(this.context, 3)], "type");
-            const loadedType = this.builder.createLoad(typePtr);
-            this._enforceVariableType(loadedType, VariableType.GLOBAL_INTEGER_TYPE);
-            const intPtr = this.builder.createInBoundsGEP(blockValue, [llvm.ConstantInt.get(this.context, 0), llvm.ConstantInt.get(this.context, 0)], "integer");
-            const intStuff = this.builder.createLoad(intPtr)
-            return this.builder.createNeg(intStuff);
+            return this.builder.createNot(blockValue);
+        } else if (isGlobalVariable(blockValue)) { /* Global var */
+            const negGlobalFnTy = llvm.FunctionType.get(this.int64Ty, [this.int8PtrTy], false);
+            if (!this.logicNegGlobalCall) {
+                this.logicNegGlobalCall = llvm.Function.create(negGlobalFnTy, llvm.LinkageTypes.ExternalLinkage, "_logicNegateGlobal", this._module);
+            }
+            const castedValue = this.builder.createBitCast(blockValue, this.int8PtrTy);
+            return this.builder.createCall(negGlobalFnTy, this.logicNegGlobalCall, [castedValue]);
         }
         throw Error("Expecting int operand in logic negate");
     }
@@ -179,22 +178,18 @@ export class BlockyCompiler {
         const printGlobalFnTy = llvm.FunctionType.get(this.voidTy, [this.int8PtrTy], false);
 
         if (!this.printCharArrayCall) {
-
             this.printCharArrayCall = llvm.Function.create(printCharArrayFnTy, llvm.LinkageTypes.ExternalLinkage, "_printConstString", this._module);
         }
 
         if (!this.printDoubleCall) {
-
             this.printDoubleCall = llvm.Function.create(printDoubleFnTy, llvm.LinkageTypes.ExternalLinkage, "_printDouble", this._module);
         }
 
         if (!this.printIntegerCall) {
-
             this.printIntegerCall = llvm.Function.create(printIntegerFnTy, llvm.LinkageTypes.ExternalLinkage, "_printInteger", this._module);
         }
 
         if (!this.printGlobalCall) {
-
             this.printGlobalCall = llvm.Function.create(printGlobalFnTy, llvm.LinkageTypes.ExternalLinkage, "_printGlobal", this._module);
         }
 
@@ -227,6 +222,10 @@ export class BlockyCompiler {
             }
 
         }
+    }
+
+    compileLogicNull(): llvm.Value {
+        return llvm.ConstantInt.get(this.context, 0, 64);
     }
 
     compileVariableSet(astblock: et.Element) {
@@ -293,6 +292,8 @@ export class BlockyCompiler {
             this.compileVariableSet(astblock);
         } else if (blockType === "text_print") {
             this.compileTextPrint(astblock);
+        } else if (blockType === "logic_null") {
+            this.compileLogicNull();
         } else {
             throw Error('Type not implemented ' + blockType);
         }
@@ -332,8 +333,8 @@ export class BlockyCompiler {
 
         // Verify and Print
         llvm.verifyModule(this._module);
-        const ll = this._module.print();
-        return ll;
+        return this._module.print();
+
     }
 }
 
