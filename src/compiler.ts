@@ -49,6 +49,7 @@ export class BlockyCompiler {
     printIntegerCall: llvm.Function | undefined;
     printGlobalCall: llvm.Function | undefined;
     logicNegGlobalCall: llvm.Function | undefined;
+    randomColorCall: llvm.Function | undefined;
 
     constructor() {
         this.context = new llvm.LLVMContext();
@@ -84,6 +85,24 @@ export class BlockyCompiler {
             this.globalMap.set(gid, gvar);
         }
     }
+
+    /* IsLeaf: yes */
+    compileColorPicker(astblock: et.Element): llvm.Value {
+        return this.compileText(astblock);
+    }
+
+    /* IsLeaf: yes */
+    // compileColorRandom(): llvm.Value {
+    //
+    // }
+
+    // compileColorBlend(astblock: et.Element): llvm.Value {
+    //
+    // }
+
+    // compileColorRGB(astblock: et.Element): llvm.Value {
+    //
+    // }
 
     /* IsLeaf: yes */
     compileLogicBoolean(astblock: et.Element): llvm.Value {
@@ -294,6 +313,8 @@ export class BlockyCompiler {
             this.compileTextPrint(astblock);
         } else if (blockType === "logic_null") {
             this.compileLogicNull();
+        } else if (blockType === "colour_picker") {
+            res = this.compileColorPicker(astblock);
         } else {
             throw Error('Type not implemented ' + blockType);
         }
